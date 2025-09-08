@@ -1,0 +1,337 @@
+name: LIMIT-GRAPH Agent CI
+
+on:
+  push:
+    paths:
+      - '**.py'
+      - 'extensions/LIMIT-GRAPH/**'
+      - '.github/workflows/limit-graph-ci.yml'
+  pull_request:
+    paths:
+      - '**.py'
+      - 'extensions/LIMIT-GRAPH/**'
+
+jobs:
+  validate-graph:
+    runs-on: ubuntu-latest
+    name: Validate Graph Consistency
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+        
+    - name: Validate Graph Structure
+      run: |
+        cd extensions/LIMIT-GRAPH/CI_Workflow
+        python validate_graph.py
+        
+    - name: Validate Multilingual Alignment
+      run: |
+        cd extensions/LIMIT-GRAPH/CI_Workflow
+        python validate_multilingual_alignment.py
+        
+    - name: Upload validation results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: graph-validation-results
+        path: extensions/LIMIT-GRAPH/validation_*.log
+
+  evaluate-agent:
+    runs-on: ubuntu-latest
+    name: Evaluate Agent Performance
+    needs: validate-graph
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+        
+    - name: Evaluate Agent Performance
+      run: |
+        cd extensions/LIMIT-GRAPH
+        python evaluate_agent.py --benchmark limit-graph
+        
+    - name: Upload evaluation results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: agent-evaluation-results
+        path: extensions/LIMIT-GRAPH/evaluation_*.json
+
+  replay-trace:
+    runs-on: ubuntu-latest
+    name: Replay Memory Traces
+    needs: [validate-graph, evaluate-agent]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Replay Memory Traces
+      run: |
+        cd extensions/LIMIT-GRAPH
+        python replay_trace.py --epoch latest
+        
+    - name: Upload trace results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: trace-replay-results
+        path: extensions/LIMIT-GRAPH/trace_*.log
+
+  redteam-evaluation:
+    runs-on: ubuntu-latest
+    name: Red Team Masked Recovery
+    needs: [validate-graph, evaluate-agent]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+        pip install matplotlib seaborn plotly pandas networkx
+        
+    - name: Run Red Team Evaluation
+      env:
+        REDTEAM_STRATEGIES: "random,structural,adversarial"
+        REDTEAM_MASK_RATIOS: "0.2,0.3,0.4"
+        REDTEAM_MIN_ACCURACY: "0.6"
+      run: |
+        cd extensions/LIMIT-GRAPH/CI_Workflow
+        python ci_redteam_hook.py
+        
+    - name: Upload red team results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: redteam-evaluation-results
+        path: |
+          extensions/LIMIT-GRAPH/CI_Workflow/ci_redteam_results.json
+          extensions/LIMIT-GRAPH/CI_Workflow/ci_redteam_report.md
+          extensions/LIMIT-GRAPH/CI_Workflow/ci_dashboard_data.json
+          extensions/LIMIT-GRAPH/CI_Workflow/ci_redteam.log
+
+  integration-test:
+    runs-on: ubuntu-latest
+    name: Integration Test
+    needs: [validate-graph, evaluate-agent, replay-trace, redteam-evaluation]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+        
+    - name: Run Integration Tests
+      run: |
+        python extensions/validate_three_components.py
+        
+    - name: Test Entity Linker
+      run: |
+        cd extensions/LIMIT-GRAPH/agents
+        python entity_linker_clean.py
+        
+    - name: Test Complete System
+      run: |
+        python extensions/demo_complete_limit_graph_system.py
+        
+    - name: Upload integration results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: integration-test-results
+        path: |
+          extensions/LIMIT-GRAPH/integration_*.log
+          extensions/test_results.json
+
+  performance-benchmark:
+    runs-on: ubuntu-latest
+    name: Performance Benchmark
+    needs: integration-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+        
+    - name: Run Performance Benchmark
+      run: |
+        python extensions/eval_limit_graph_performance.py
+        
+    - name: Generate Performance Report
+      run: |
+        cd extensions/LIMIT-GRAPH
+        python -c "
+        import json
+        from datetime import datetime
+        
+        # Generate performance report
+        report = {
+            'timestamp': datetime.now().isoformat(),
+            'commit': '${{ github.sha }}',
+            'branch': '${{ github.ref_name }}',
+            'status': 'completed'
+        }
+        
+        with open('performance_report.json', 'w') as f:
+            json.dump(report, f, indent=2)
+        "
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-benchmark-results
+        path: |
+          extensions/LIMIT-GRAPH/performance_*.json
+          extensions/LIMIT-GRAPH/benchmark_*.png
+
+  deploy-dashboard:
+    runs-on: ubuntu-latest
+    name: Deploy Dashboard
+    needs: performance-benchmark
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Generate Dashboard Assets
+      run: |
+        cd extensions
+        python -c "
+        # Generate static dashboard assets
+        print('📊 Generating dashboard assets...')
+        
+        # This would generate static HTML/JS for dashboard
+        import json
+        
+        dashboard_config = {
+            'title': 'LIMIT-GRAPH Performance Dashboard',
+            'last_updated': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+            'commit': '${{ github.sha }}',
+            'status': 'active'
+        }
+        
+        with open('dashboard_config.json', 'w') as f:
+            json.dump(dashboard_config, f, indent=2)
+        
+        print('✅ Dashboard assets generated')
+        "
+        
+    - name: Upload dashboard assets
+      uses: actions/upload-artifact@v3
+      with:
+        name: dashboard-assets
+        path: |
+          extensions/dashboard_*.json
+          extensions/dashboard_*.html
+
+  notify-status:
+    runs-on: ubuntu-latest
+    name: Notify CI Status
+    needs: [validate-graph, evaluate-agent, replay-trace, redteam-evaluation, integration-test]
+    if: always()
+    
+    steps:
+    - name: Determine overall status
+      id: status
+      run: |
+        if [[ "${{ needs.validate-graph.result }}" == "success" && \
+              "${{ needs.evaluate-agent.result }}" == "success" && \
+              "${{ needs.replay-trace.result }}" == "success" && \
+              "${{ needs.redteam-evaluation.result }}" == "success" && \
+              "${{ needs.integration-test.result }}" == "success" ]]; then
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "message=✅ All LIMIT-GRAPH CI checks passed!" >> $GITHUB_OUTPUT
+        else
+          echo "status=failure" >> $GITHUB_OUTPUT
+          echo "message=❌ Some LIMIT-GRAPH CI checks failed" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Create CI Summary
+      run: |
+        echo "## 🧠 LIMIT-GRAPH CI Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Graph Validation | ${{ needs.validate-graph.result == 'success' && '✅ Pass' || '❌ Fail' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Agent Evaluation | ${{ needs.evaluate-agent.result == 'success' && '✅ Pass' || '❌ Fail' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Trace Replay | ${{ needs.replay-trace.result == 'success' && '✅ Pass' || '❌ Fail' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Red Team Evaluation | ${{ needs.redteam-evaluation.result == 'success' && '✅ Pass' || '❌ Fail' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Integration Test | ${{ needs.integration-test.result == 'success' && '✅ Pass' || '❌ Fail' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Overall Status:** ${{ steps.status.outputs.message }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
